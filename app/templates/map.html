@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Bakery Route Map</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" 
+          href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" 
+          crossorigin=""/>
+
+    <!-- Leaflet Routing Machine CSS -->
+    <link rel="stylesheet" 
+          href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css"/>
+    
+    <style>
+        body { margin: 0; padding: 0; }
+        #map { width: 100%; height: 100vh; }
+    </style>
+</head>
+<body>
+
+    <label for="distanceSlider">Max Distance (km):</label>
+    <input type="range" id="distanceSlider" min="0.5" max="5" step="0.1" value="1.5">
+    <span id="distanceValue">1.5 km</span>
+
+    <div id="controls">
+        <label for="sort">Sort by:</label>
+        <select id="sort" multiple>
+            <option value="popularity">Popularity</option>
+            <option value="rating">Rating</option>
+            <option value="hype">Hype</option>
+            <option value="distance">Distance</option>
+        </select>
+
+        <button id="applySort">Apply</button>
+    </div>
+
+    <div id="map"></div>
+
+    
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" 
+            crossorigin=""></script>
+
+    <!-- Leaflet Routing Machine JS -->
+    <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+
+    <script>
+
+        const redIcon = L.icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+            iconSize:     [25, 41],
+            iconAnchor:   [12, 41],
+            popupAnchor:  [1, -34],
+            shadowSize:   [41, 41]
+        });
+
+
+        function haversineDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // km
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = 
+                0.5 - Math.cos(dLat)/2 +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                (1 - Math.cos(dLon)) / 2;
+        
+            return R * 2 * Math.asin(Math.sqrt(a));
+        }
+
+
+        document.addEventListener('DOMContentLoaded', function() {
+
+        var map = L.map('map').setView([55.6761, 12.5683], 13);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        const distanceSlider = document.getElementById('distanceSlider');
+        const distanceValue = document.getElementById('distanceValue');
+
+        distanceSlider.addEventListener('input', () => {
+            distanceValue.textContent = `${distanceSlider.value} km`;
+            updateBakeriesList();  // call your filtering function
+        });
+
+
+        let bakeries = [];  // will hold the list fetched from backend
+
+        function updateBakeriesList() {
+            if (!bakeries.length) return;
+        
+            const maxDistance = parseFloat(distanceSlider.value);
+        
+            const filtered = bakeries.filter(b => {
+                const dist = haversineDistance(startLat, startLng, b.latitude, b.longitude);
+                return dist <= maxDistance;
+            });
+        
+            console.log("Filtered bakeries:", filtered);
+        }
+
+        fetch('/api/bakeries')
+            .then(r => r.json())
+            .then(data => {
+                bakeries = data;
+                updateBakeriesList();  // run once at start
+            });
+
+
+            
+        let startMarker = null;
+        let startLat = 55.6761; 
+        let startLng = 12.5683;
+            
+        map.on('click', function(e) {
+            startLat = e.latlng.lat;
+            startLng = e.latlng.lng;
+        
+            if (startMarker) {
+                map.removeLayer(startMarker);
+            }
+        
+            startMarker = L.marker([startLat, startLng], {icon: redIcon, draggable: true })
+                .addTo(map)
+                .bindPopup("Starting point")
+                .openPopup();
+        
+            startMarker.on('dragend', function(event) {
+                const pos = event.target.getLatLng();
+                startLat = pos.lat;
+                startLng = pos.lng;
+            });
+
+            updateBakeriesList();
+
+        });
+
+
+
+        let routeControl = null;
+
+        document.getElementById('applySort').addEventListener('click', function() {
+            // Collect all selected options
+            const selected = Array.from(document.getElementById('sort').selectedOptions)
+                                  .map(opt => opt.value);
+        
+            if (selected.length === 0) {
+                alert("Please select at least one sorting criterion");
+                return;
+            }
+        
+            // Pass as comma-separated string to backend
+            const sortParam = selected.join(',');
+        
+            fetch(`/api/route?start_lat=${startLat}&start_lng=${startLng}&sort=${sortParam}&count=5`)
+                .then(response => response.json())
+                .then(data => {
+                    if (routeControl) routeControl.remove();
+                
+                    // Convert API data to waypoints
+                    const waypoints = [
+                        L.latLng(startLat, startLng),   // ALWAYS start here
+                        ...data.map(b => L.latLng(b.latitude, b.longitude))
+                    ]
+                    // Add routing control
+                    routeControl = L.Routing.control({
+                        waypoints: waypoints,
+                        lineOptions: { styles: [{ color: 'blue', weight: 4 }] },
+                        addWaypoints: false,
+                        draggableWaypoints: false,
+                        createMarker: (i, wp) => {
+                            var marker = L.marker(wp.latLng);
+                            if (i === 0) marker = L.marker(wp.latLng, {icon: redIcon}).bindPopup("Start");
+                            else marker.bindPopup(data[i - 1].name);
+                            return marker;
+                        }
+                    }).addTo(map);
+                })
+                .catch(err => console.error(err));
+        });
+    });
+    </script>
+
+
+    
+</body>
+</html>
