@@ -56,3 +56,9 @@ def create_bakery():
 
 
     return jsonify(bakery.to_dict()), 201
+
+
+@main_bp.route("/health")
+def health():
+    return jsonify(status="ok"), 200
+
